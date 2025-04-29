@@ -1,0 +1,625 @@
+
+```{r packages}
+library(psych)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(dplyr)
+library(MASS)
+library(foreign)
+library(randtests)
+library(pscl)
+library(stats)
+library(lavaan)
+library(semPlot)
+library(modelsummary)
+library(ggplot2)
+library(effectsize)
+library(wCorr)
+library(Hmisc)
+library(mirt)
+setwd("~/Documents/Legacy Intergenerational Polarization Experiment")
+data <- read.csv("Cleaned Datafile.csv")
+#View(data)
+```
+
+```{r cleaning}
+data <- data %>%
+  mutate(
+    CollegeEducation = case_when(
+      CollegeEducation == "Yes, I have a college degree" ~ 1,
+      CollegeEducation == "No, I do not have a college degree" ~ 0,
+      CollegeEducation == "2" ~ 0,
+      TRUE ~ NA_real_  # catch any other unexpected values
+    )
+  )
+data$CollegeEducation <- as.numeric(data$CollegeEducation)
+data <- data %>%
+  mutate(Gender = case_when(
+    Male == "Male" ~ 0,
+    Female == "Female" ~ 1,
+    NonBinary == "Transgender" ~ 1 #NonBinary excluded for now, male = 0 and female = 1
+  ))
+
+data$Condition <- ifelse(data$ManipText != "", "Manipulation", 
+                         ifelse(data$ControlText != "", "Control", NA))
+
+#Factor analysis pre-checks on DVs
+KMO(data[, c("GovEnvSpend", "EnvReg", "GovActionRisingTemps")])
+cortest.bartlett(data[, c("GovEnvSpend", "EnvReg", "GovActionRisingTemps")])
+cor(data[, c("GovEnvSpend", "EnvReg", "GovActionRisingTemps")], use = "pairwise.complete.obs")
+psych::omega(data[, c("GovEnvSpend", "EnvReg", "GovActionRisingTemps")])
+#Alpha = 0.9, omega = 0.9
+model <- '  Factor1 =~ GovEnvSpend + EnvReg + GovActionRisingTemps '
+fit <- cfa(model, data = data)
+summary(fit, fit.measures = TRUE, standardized = TRUE)
+inspect(fit, "est")$lambda
+data <- data %>%
+  mutate(PolicySupport = (GovEnvSpend + EnvReg + GovActionRisingTemps) / 3)
+
+
+
+#Factor analysis on the PANAS climate emotion questions
+# Run EFA on all 8 items (Hopeful, Fearful, Sadness, Helplessness, Guilty, Optimistic, Skepticism, Angry)
+efa_results <- fa(data[, c("Hopeful", "Fearful", "Sadness", "Helplessness", "Guilty", "Optimistic", "Skepticism", "Angry")], 
+                  nfactors = 2, # Try to extract 2 factors
+                  fm = "ml",  # Maximum Likelihood estimation method
+                  rotate = "varimax")  # Varimax rotation for simplicity
+print(efa_results)
+summary(efa_results)
+efa_results$loadings
+#Suggests two factor model, but low loading for skepticism on both
+
+# Define the model without Skepticism
+cfa_model_no_skepticism <- '
+  # Latent variables (factors)
+  NegativeEmotions =~ Fearful + Sadness + Helplessness + Guilty + Angry
+  PositiveEmotions =~ Hopeful + Optimistic
+'
+fit_no_skepticism <- cfa(cfa_model_no_skepticism, data = data)
+summary(fit_no_skepticism, fit.measures = TRUE, standardized = TRUE)
+
+# Test one-factor solution involving reverse-coded Hopeful and Optimistic
+efa_data <- data[, c("Hopeful", "Fearful", "Sadness", "Helplessness", 
+                     "Guilty", "Angry", "Optimistic")]
+efa_result <- fa(efa_data, nfactors = 1, rotate = "varimax", fm = "ml")
+summary(efa_result, fit.measures = TRUE)
+
+# Define CFA model with one latent factor (e.g., "NegEmotion")
+cfa_model <- '
+  NegEmotion =~ Hopeful + Fearful + Sadness + Helplessness + Guilty + Angry + Optimistic
+'
+# Fit the model
+fit <- cfa(cfa_model, data = efa_data)
+# Summary with standardized loadings and fit indices
+summary(fit, standardized = TRUE, fit.measures = TRUE)
+
+#The two-factor CFA provides a better model fit than the one-factor EFA, as seen in the lower RMSEA, higher TLI, and lower BIC values. The one-factor model seems to be a poor fit for the data, likely because the items are measuring both positive and negative emotions that should be captured in separate factors.
+
+
+## Action v inaction emotions
+cfa_model <- '
+  PosEmotion =~ Angry + Optimistic + Hopeful
+  NegEmotion =~ Fearful + Sadness + Helplessness + Guilty
+'
+# Fit the model
+fit <- cfa(cfa_model, data = data)
+# Summarize results with standardized loadings and fit indices
+summary(fit, standardized = TRUE, fit.measures = TRUE)
+
+
+
+# Calculate negative + positive emotion scales
+data <- data %>%
+  mutate(
+    NegativeEmotion = (Fearful +Sadness +Helplessness +Guilty +Angry) / 5  # Average the raw scores for negative emotions
+  )
+data <- data %>%
+  mutate(
+    PositiveEmotion = (Hopeful +  Optimistic ) / 2  # Average the raw scores for positive emotions
+  )
+
+#Confirmatory actor analysis on the legacy motivation questions
+psych::omega(data[, c("ImportantLeavePositiveLegacy", "ImportantPositiveSocietyImpact", "CareFutureGenerationsThoughts")])
+#Alpha = 0.84, omega = 0.85
+cfa_model <- '  Factor1 =~ ImportantLeavePositiveLegacy + ImportantPositiveSocietyImpact + CareFutureGenerationsThoughts '
+fit_cfa <- cfa(cfa_model, data = data)
+summary(fit_cfa, fit.measures = TRUE, standardized = TRUE)
+
+data <- data %>% mutate(
+    LegacyManipCheck = (ImportantLeavePositiveLegacy +  ImportantPositiveSocietyImpact + CareFutureGenerationsThoughts) / 3  
+  )
+
+data <- data %>% filter(Serious == "Yes")
+```
+
+#DESCRIPTIVE STATISTICS
+
+```{r demographics}
+data %>% filter(Serious == "Yes") %>%
+  summarise(count = n(),
+            mAge = mean(Age, na.rm = TRUE),
+            mLibCon = mean(LibCon, na.rm = TRUE),
+            mEducation = mean(CollegeEducation, na.rm = TRUE),
+            mGender = mean(Gender, na.rm = TRUE),
+            mPolicySupport = mean(PolicySupport, na.rm = TRUE),
+            sdPolicySupport = sd(PolicySupport, na.rm = TRUE))
+
+data %>% filter(Serious == "Yes") %>%
+  summarise(mPolicySupport = mean(PolicySupport, na.rm = TRUE),
+            sdPolicySupport = sd(PolicySupport, na.rm = TRUE),
+            mPositiveEmotion = mean(PositiveEmotion, na.rm = TRUE),
+            sdPositiveEmotion = sd(PositiveEmotion, na.rm = TRUE),
+            mNegativeEmotion = mean(NegativeEmotion, na.rm = TRUE),
+            sdNegativeEmotion = sd(NegativeEmotion, na.rm = TRUE),
+            mSkepticism = mean(Skepticism, na.rm = TRUE),
+            sdSkepticism = sd(Skepticism, na.rm = TRUE))
+
+data %>% filter(Serious == "Yes") %>%
+  summarise(mClimateImpact = mean(ClimateImpactFutureGenerations, na.rm = TRUE),
+            sdClimateImpact = sd(ClimateImpactFutureGenerations, na.rm = TRUE),
+            mLegacyManipCheck = mean(LegacyManipCheck, na.rm = TRUE),
+            sdLegacyManipCheck = sd(LegacyManipCheck, na.rm = TRUE))
+            
+data %>% filter(Serious == "Yes") %>% count(CandidateVote)
+```
+
+#FIRST-PASS ANAYSES
+```{r tests}
+data %>% group_by(Condition) %>%
+  summarise(mPolicySupport = mean(PolicySupport, na.rm = TRUE),
+            sdPolicySupport = sd(PolicySupport, na.rm = TRUE),
+            mGovEnvSpend = mean(GovEnvSpend, na.rm = TRUE),
+            sdGovEnvSpend = sd(GovEnvSpend, na.rm = TRUE),
+            mEnvReg = mean(EnvReg, na.rm = TRUE),
+            sdEnvReg = sd(EnvReg, na.rm = TRUE),
+            mGovActionRisingTemps = mean(GovActionRisingTemps, na.rm = TRUE),
+            sdGovActionRisingTemps = sd(GovActionRisingTemps, na.rm = TRUE))
+
+data %>% group_by(Condition) %>%
+  summarise(mPolicySupport = mean(PolicySupport, na.rm = TRUE),
+            mLegacyManipCheck = mean(LegacyManipCheck, na.rm = TRUE),
+            mPositiveEmotion = mean(PositiveEmotion, na.rm = TRUE),
+            mNegativeEmotion = mean(NegativeEmotion, na.rm = TRUE))
+
+# GovEnvSpend + EnvReg + GovActionRisingTemps
+
+m1 <- lm(PolicySupport ~ Condition + Age+  LibCon+ CollegeEducation  + Gender  + IncomeUAS, data = data)
+summary(m1)
+standardize_parameters(m1)
+
+m2 <- lm(LegacyManipCheck ~ Condition + Age+  LibCon+ CollegeEducation  + Gender  + IncomeUAS, data = data)
+summary(m2)
+standardize_parameters(m2)
+
+#are people answering the climate policy support questions in the way we'd expect?
+m3 <- lm(PolicySupport ~ Age * LibCon+ CollegeEducation  + Gender  + IncomeUAS + ClimateImpactFutureGenerations, data = data)
+summary(m3)
+standardize_parameters(m3)
+
+```
+
+```{r mediation}
+# Model specification for positive emotions as mediator
+model_pos <- '
+  # Direct paths
+  PositiveEmotion ~ c1*Condition  # Condition -> Positive Emotions
+  PolicySupport ~ c2*Condition     # Condition -> Policy Support
+  PolicySupport ~ c3*PositiveEmotion  # Positive Emotions -> Policy Support
+
+  # Indirect effect (c1 * c3)
+  indirect := c1 * c3
+'
+fit_pos <- sem(model_pos, data = data)
+summary(fit_pos, standardized = TRUE, fit.measures = TRUE)
+#estimates
+#Main effect: 0.02, p > 0.85
+#Effect on emotion: 0.26, p < 0.001
+#Emotion on policy: 0.37, p < 0.001
+#Indirect effect: 0.10, p < 0.001
+
+
+# Model specification for negative emotions as mediator
+model_neg <- '
+  # Direct paths
+  NegativeEmotion ~ c1*Condition  # Condition -> Negative Emotions
+  PolicySupport ~ c2*Condition     # Condition -> Policy Support
+  PolicySupport ~ c3*NegativeEmotion  # Negative Emotions -> Policy Support
+
+  # Indirect effect (c1 * c3)
+  indirect := c1 * c3
+'
+fit_neg <- sem(model_neg, data = data)
+summary(fit_neg, standardized = TRUE, fit.measures = TRUE)
+#estimates
+#Main effect: -0.01, p > 0.87
+#Effect on emotion: 0.12, p < 0.08
+#Emotion on policy: 1.07, p < 0.001
+#Indirect effect: 0.13, p < 0.08
+
+
+
+#Partial mediation tests
+
+model_partial <- '
+  PositiveEmotion ~ Condition
+  PolicySupport ~ PositiveEmotion + Condition  # Direct effect included
+'
+fit_partial <- sem(model_partial, data = data)
+model_full <- '
+  PositiveEmotion ~ Condition
+  PolicySupport ~ PositiveEmotion  # Direct effect removed
+'
+fit_full <- sem(model_full, data = data)
+anova(fit_full, fit_partial)
+
+
+model_partial_neg <- '
+  NegativeEmotion ~ Condition
+  PolicySupport ~ NegativeEmotion + Condition
+'
+fit_partial_neg <- sem(model_partial_neg, data = data)
+model_full_neg <- '
+  NegativeEmotion ~ Condition
+  PolicySupport ~ NegativeEmotion
+'
+fit_full_neg <- sem(model_full_neg, data = data)
+anova(fit_full_neg, fit_partial_neg)
+
+
+#Comparison to model with both positive and negative emotions included as mediators
+model_parallel <- '
+  PositiveEmotion  ~ Condition
+  NegativeEmotion  ~ Condition
+  PolicySupport    ~ PositiveEmotion + NegativeEmotion + Condition
+'
+
+fit_parallel <- sem(model_parallel, data = data)
+
+anova(fit_parallel, fit_pos)  # Compare to positive-only model
+anova(fit_parallel, fit_neg)  # Compare to negative-only model
+anova(fit_neg, fit_pos)
+
+```
+
+#MEASUREMENT CLASS PROJECT ANALYSES
+
+```{r MIRTattempt}
+library(mirt)
+
+library(mirt)
+
+# Step 1: Subset only ideology 5–7
+data_dif <- subset(data, LibCon %in% c(5, 6, 7))
+data_dif$IdeologyGroup <- factor(data_dif$LibCon)
+
+# Step 2: Fit multiple-group IRT model using graded response model (GRM)
+policy_items <- c("GovEnvSpend", "EnvReg", "GovActionRisingTemps")
+mod_dif <- multipleGroup(data_dif[, policy_items], model = 1,
+                         itemtype = "graded", group = data_dif$IdeologyGroup)
+
+# Step 3: Extract and compare item parameters across ideology groups
+coef(mod_dif, simplify = TRUE)
+```
+
+```{r MeasurementInvariance}
+
+data$PositiveEmotion <- rowMeans(data[, c("Optimistic", "Hopeful")], na.rm = TRUE)
+emotion_items <- c("Fearful", "Sadness", "Helplessness", "Guilty", "Angry")
+ideo_alpha <- data %>%
+  filter(LibCon %in% c(5, 6, 7)) %>%
+  group_by(LibCon) %>%
+  group_split() %>%
+  map_dbl(~ psych::alpha(.x[emotion_items])$total$raw_alpha)
+
+names(ideo_alpha) <- c("LibCon_5", "LibCon_6", "LibCon_7")
+ideo_alpha
+
+data$AgeGroup <- cut(data$Age, breaks = c(20, 40, 60, Inf), labels = c("20-40", "40-60", "60+"))
+
+age_alpha <- data %>%
+  filter(!is.na(AgeGroup)) %>%
+  group_by(AgeGroup) %>%
+  group_split() %>%
+  map_dbl(~ psych::alpha(.x[emotion_items])$total$raw_alpha)
+
+names(age_alpha) <- c("Age_20_40", "Age_40_60", "Age_60plus")
+age_alpha
+
+
+
+
+
+data$AgeGroup <- cut(data$Age, breaks = c(20, 40, 60, Inf), labels = c("20-40", "40-60", "60+"))
+data_age <- subset(data, !is.na(AgeGroup))
+data_ideo <- subset(data, LibCon %in% c(5, 6, 7))
+data_ideo$IdeologyGroup <- factor(data_ideo$LibCon)
+
+emotion_model_revised <- '  NegEmotion =~ Fearful + Sadness + Helplessness + Guilty + Angry'
+
+#AGE
+
+#Fit configural model
+fit_config_age <- cfa(emotion_model_revised, data = data_age, group = "AgeGroup", std.lv = TRUE)
+summary(fit_config_age, fit.measures = TRUE, standardized = TRUE)
+# Fit Metric invariance (constrain loadings equal)
+fit_metric_age <- cfa(emotion_model_revised, data = data_age, group = "AgeGroup", group.equal = "loadings", std.lv = TRUE)
+# Fit Scalar invariance (constrain loadings and intercepts equal)
+fit_scalar_age <- cfa(emotion_model_revised, data = data_age, group = "AgeGroup", group.equal = c("loadings", "intercepts"), std.lv = TRUE)
+# Compare models with chi-squared
+anova(fit_config_age, fit_metric_age, fit_scalar_age)
+# Extract CFI and RMSEA
+cfi_age <- c(fitmeasures(fit_config_age, "cfi"), fitmeasures(fit_metric_age, "cfi"), fitmeasures(fit_scalar_age, "cfi"))
+rmsea_age <- c(fitmeasures(fit_config_age, "rmsea"), fitmeasures(fit_metric_age, "rmsea"), fitmeasures(fit_scalar_age, "rmsea"))
+# Calculate changes
+delta_cfi_age <- diff(cfi_age)
+delta_rmsea_age <- diff(rmsea_age)
+# View
+delta_cfi_age
+delta_rmsea_age
+
+
+# LIBCON
+fit_config_ideo <- cfa(emotion_model_revised, data = data_ideo, group = "IdeologyGroup", std.lv = TRUE)
+summary(fit_config_ideo, fit.measures = TRUE, standardized = TRUE)
+fit_metric_ideo <- cfa(emotion_model_revised, data = data_ideo, group = "IdeologyGroup", group.equal = "loadings", std.lv = TRUE)
+fit_scalar_ideo <- cfa(emotion_model_revised, data = data_ideo, group = "IdeologyGroup", group.equal = c("loadings", "intercepts"), std.lv = TRUE)
+anova(fit_config_ideo, fit_metric_ideo, fit_scalar_ideo)
+cfi_ideo <- c(fitmeasures(fit_config_ideo, "cfi"),
+              fitmeasures(fit_metric_ideo, "cfi"),
+              fitmeasures(fit_scalar_ideo, "cfi"))
+rmsea_ideo <- c(fitmeasures(fit_config_ideo, "rmsea"),
+                fitmeasures(fit_metric_ideo, "rmsea"),
+                fitmeasures(fit_scalar_ideo, "rmsea"))
+# Deltas
+delta_cfi_ideo <- diff(cfi_ideo)
+delta_rmsea_ideo <- diff(rmsea_ideo)
+# View results
+delta_cfi_ideo
+delta_rmsea_ideo
+
+
+
+
+# Fit configural model for AgeGroup
+fit_config_age <- cfa(emotion_model, data = data_age, group = "AgeGroup", std.lv = TRUE)
+# Inspect convergence
+summary(fit_config_age, fit.measures = TRUE, standardized = TRUE)
+
+
+# --- AGE Invariance ---
+fit_config_age <- cfa(emotion_model, data = data_age, group = "AgeGroup", std.lv = TRUE)
+fit_metric_age <- cfa(emotion_model, data = data_age, group = "AgeGroup", group.equal = "loadings", std.lv = TRUE)
+fit_scalar_age <- cfa(emotion_model, data = data_age, group = "AgeGroup", group.equal = c("loadings", "intercepts"), std.lv = TRUE)
+
+# Extract fit indices
+fitmeasures(fit_config_age, c("cfi", "rmsea"))
+fitmeasures(fit_metric_age, c("cfi", "rmsea"))
+fitmeasures(fit_scalar_age, c("cfi", "rmsea"))
+
+
+anova(fit_config_age, fit_metric_age, fit_scalar_age)
+
+# --- IDEOLOGY Invariance ---
+fit_config_ideo <- cfa(emotion_model, data = data_ideo, group = "IdeologyGroup", std.lv = TRUE)
+fit_metric_ideo <- cfa(emotion_model, data = data_ideo, group = "IdeologyGroup", group.equal = "loadings", std.lv = TRUE)
+fit_scalar_ideo <- cfa(emotion_model, data = data_ideo, group = "IdeologyGroup", group.equal = c("loadings", "intercepts"), std.lv = TRUE)
+
+anova(fit_config_ideo, fit_metric_ideo, fit_scalar_ideo)
+
+
+```
+
+#SECONDARY ANALYSES
+```{r descriptivesGroupAnalysis}
+
+install.packages("emmeans")
+# Create subsets based on ideology scores (assuming variable is "LibCon")
+data <- data %>% filter(LibCon %in% c(5, 6, 7))
+data$Ideology <- factor(data_conservatives$LibCon, levels = c(5,6,7), labels = c("ModCon", "Cons", "StrongCons"))
+
+# Interaction model to test effect moderation by ideology
+lm_ideology <- lm(PolicySupport ~ Condition * Ideology + Age + CollegeEducation + Gender + IncomeUAS, data = data)
+summary(lm_ideology)
+
+# Simple effects (to see Condition effect within each ideological group clearly)
+library(emmeans)
+emmeans(lm_ideology, pairwise ~ Condition | Ideology)
+
+# For Age Groups
+data <- data %>% mutate(AgeGroup = cut(Age, breaks=c(20,40,60,100), labels=c("20-40","40-60","60+")))
+
+# Interaction model by AgeGroup
+lm_agegroup <- lm(PolicySupport ~ Condition * AgeGroup + LibCon + CollegeEducation + Gender + IncomeUAS, data = data)
+summary(lm_agegroup)
+emmeans(lm_agegroup, pairwise ~ Condition | AgeGroup)
+
+
+# Select relevant variables
+comparison_vars <- c("Hopeful", "Fearful", "Sadness", "Helplessness", "Guilty",
+                     "Optimistic", "Skepticism", "Angry",
+                     "ClimateImpactFutureGenerations",
+                     "LegacyManipCheck")
+
+# By Ideology
+by_ideology <- data %>%
+  group_by(Ideology) %>%
+  summarise(across(all_of(comparison_vars), list(mean=~mean(.x, na.rm=TRUE), 
+                                                 sd=~sd(.x, na.rm=TRUE), 
+                                                 n=~sum(!is.na(.x)))))
+print(by_ideology)
+
+# By Age Group
+by_age <- data %>%
+  group_by(AgeGroup) %>%
+  summarise(across(all_of(comparison_vars), list(mean=~mean(.x, na.rm=TRUE), 
+                                                 sd=~sd(.x, na.rm=TRUE), 
+                                                 n=~sum(!is.na(.x)))))
+print(by_age)
+
+# Cross-tabulations (Chi-square tests)
+table(data$CandidateVote, data$Ideology)
+chisq.test(table(data$CandidateVote, data$Ideology))
+
+table(data$CandidateVote, data$AgeGroup)
+chisq.test(table(data$CandidateVote, data$AgeGroup))
+
+
+```
+
+```{r serialMediation}
+serial_model <- '
+  # Direct effects
+  LegacyManipCheck ~ a*Condition
+  PositiveEmotion ~ b*LegacyManipCheck + Condition
+  NegativeEmotion ~ d*LegacyManipCheck + Condition
+  PolicySupport ~ c*PositiveEmotion + e*NegativeEmotion + f*LegacyManipCheck + Condition
+
+  # Indirect effects
+  indirect_Positive := a*b*c
+  indirect_Negative := a*d*e
+  indirect_LegacyOnly := a*f
+
+  # Total indirect effect
+  total_indirect := indirect_Positive + indirect_Negative + indirect_LegacyOnly
+'
+
+fit_serial <- sem(serial_model, data = data, bootstrap=1000)
+summary(fit_serial, standardized=TRUE, ci=TRUE, fit.measures=TRUE)
+
+# Positive emotions only
+positive_model <- '
+  LegacyManipCheck ~ Condition
+  PositiveEmotion ~ LegacyManipCheck + Condition
+  PolicySupport ~ PositiveEmotion + LegacyManipCheck + Condition
+'
+fit_positive <- sem(positive_model, data=data)
+
+# Negative emotions only
+negative_model <- '
+  LegacyManipCheck ~ Condition
+  NegativeEmotion ~ LegacyManipCheck + Condition
+  PolicySupport ~ NegativeEmotion + LegacyManipCheck + Condition
+'
+fit_negative <- sem(negative_model, data=data)
+
+# Compare all models clearly
+anova(fit_positive, fit_negative, fit_serial)
+
+
+```
+
+```{r actionVnonaction}
+# Lerner’s typology clearly mapped to your PANAS items
+data <- data %>% mutate(
+  ActionEmotion = (Angry + Hopeful + Optimistic) / 3,  # Anger & hope = high control, action-oriented
+  NonActionEmotion = (Sadness + Fearful + Helplessness + Guilty) / 4  # Low control, passive emotions
+)
+
+model_action <- '
+  ActionEmotion ~ a*Condition
+  PolicySupport ~ b*ActionEmotion + c*Condition
+
+  indirect_action := a * b
+'
+fit_action <- sem(model_action, data=data)
+summary(fit_action, standardized=TRUE, fit.measures=TRUE)
+
+model_nonaction <- '
+  NonActionEmotion ~ d*Condition
+  PolicySupport ~ e*NonActionEmotion + f*Condition
+
+  indirect_nonaction := d * e
+'
+fit_nonaction <- sem(model_nonaction, data=data)
+summary(fit_nonaction, standardized=TRUE, fit.measures=TRUE)
+
+model_combined <- '
+  ActionEmotion ~ a*Condition
+  NonActionEmotion ~ d*Condition
+  PolicySupport ~ b*ActionEmotion + e*NonActionEmotion + f*Condition
+
+  indirect_action := a * b
+  indirect_nonaction := d * e
+'
+fit_combined <- sem(model_combined, data=data)
+summary(fit_combined, standardized=TRUE, fit.measures=TRUE)
+
+
+anova(fit_action, fit_nonaction, fit_combined)
+```
+
+```{r allEmotionsSingleMediations}
+library(lavaan)
+library(dplyr)
+library(tibble)
+
+emotion_mediation_full_summary <- function(data, emotions, bootsteps) {
+  all_results <- list()
+
+  for (emo in emotions) {
+    model <- sprintf('
+      %1$s ~ ManipEffect_on_Emotion*Condition + Age + Gender + CollegeEducation + IncomeUAS
+      PolicySupport ~ EmotionEffect_on_Policy*%1$s + DirectEffect_of_Manip*Condition + Age + Gender + CollegeEducation + IncomeUAS
+      IndirectEffect := ManipEffect_on_Emotion * EmotionEffect_on_Policy
+      TotalEffect := DirectEffect_of_Manip + IndirectEffect
+    ', emo)
+
+    fit <- tryCatch(
+      sem(model, data = data, se = "bootstrap", bootstrap = bootsteps),
+      error = function(e) return(NULL)
+    )
+
+    if (!is.null(fit)) {
+      pe <- parameterEstimates(fit, standardized = TRUE, ci = TRUE)
+      get_est <- function(label) pe$est[pe$label == label]
+      get_p <- function(label) pe$pvalue[pe$label == label]
+
+      res <- tibble(
+        Emotion = emo,
+
+        # Mediation paths
+        Manip_Effect_on_Emotion = get_est("ManipEffect_on_Emotion"),
+        p_Manip_Effect_on_Emotion = get_p("ManipEffect_on_Emotion"),
+
+        Emotion_Effect_on_Policy = get_est("EmotionEffect_on_Policy"),
+        p_Emotion_Effect_on_Policy = get_p("EmotionEffect_on_Policy"),
+
+        Direct_Effect_of_Manip = get_est("DirectEffect_of_Manip"),
+        p_Direct_Effect_of_Manip = get_p("DirectEffect_of_Manip"),
+
+        Indirect_Effect = get_est("IndirectEffect"),
+        p_Indirect_Effect = get_p("IndirectEffect"),
+
+        Total_Effect = get_est("TotalEffect"),
+        p_Total_Effect = get_p("TotalEffect"),
+
+        # Demographic predictors of emotion
+        Age_on_Emotion = pe$est[pe$lhs == emo & pe$rhs == "Age"],
+        Gender_on_Emotion = pe$est[pe$lhs == emo & pe$rhs == "Gender"],
+        CollegeEd_on_Emotion = pe$est[pe$lhs == emo & pe$rhs == "CollegeEducation"],
+        Income_on_Emotion = pe$est[pe$lhs == emo & pe$rhs == "IncomeUAS"],
+
+        # Demographic predictors of policy support
+        Age_on_Policy = pe$est[pe$lhs == "PolicySupport" & pe$rhs == "Age"],
+        Gender_on_Policy = pe$est[pe$lhs == "PolicySupport" & pe$rhs == "Gender"],
+        CollegeEd_on_Policy = pe$est[pe$lhs == "PolicySupport" & pe$rhs == "CollegeEducation"],
+        Income_on_Policy = pe$est[pe$lhs == "PolicySupport" & pe$rhs == "IncomeUAS"]
+      )
+
+      all_results[[emo]] <- res
+    }
+  }
+
+  bind_rows(all_results)
+}
+
+emotions <- c("Hopeful", "Fearful", "Sadness", "Helplessness", "Guilty", "Optimistic", "Skepticism", "Angry")
+# Redefine the function with the correct name and do NOT overwrite it
+emotion_mediation_summary_df <- emotion_mediation_full_summary(data, emotions, bootsteps = 1000)
+#View(emotion_mediation_summary_df)
+```
+
+
+
+
