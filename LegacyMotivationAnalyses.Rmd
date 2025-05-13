@@ -119,6 +119,17 @@ data <- data %>%
     PositiveEmotion = (Hopeful +  Optimistic ) / 2  # Average the raw scores for positive emotions
   )
 
+mean(data$NegativeEmotion, na.rm = TRUE)
+sd(data$PositiveEmotion, na.rm = TRUE)
+psych::alpha(data[, c("Fearful", "Sadness", "Helplessness", "Guilty", "Angry")])
+
+neg_alpha <- psych::alpha(data[, c("Fearful", "Sadness", "Helplessness", "Guilty", "Angry")])
+neg_alpha$total$raw_alpha
+
+cor(data$Hopeful, data$Optimistic, use = "complete.obs")
+
+
+
 #Confirmatory actor analysis on the legacy motivation questions
 psych::omega(data[, c("ImportantLeavePositiveLegacy", "ImportantPositiveSocietyImpact", "CareFutureGenerationsThoughts")])
 #Alpha = 0.84, omega = 0.85
@@ -131,6 +142,18 @@ data <- data %>% mutate(
   )
 
 data <- data %>% filter(Serious == "Yes")
+
+
+#Factor loadings
+# Extract factor loadings (standardized)
+emotion_cfa_table <- lavaan::parameterEstimates(fit_no_skepticism, standardized = TRUE) %>%
+  dplyr::filter(op == "=~") %>%
+  dplyr::select(lhs, rhs, std.all)
+
+# View the table
+print(emotion_cfa_table)
+
+
 ```
 
 #DESCRIPTIVE STATISTICS
@@ -218,6 +241,29 @@ summary(fit_pos, standardized = TRUE, fit.measures = TRUE)
 #Emotion on policy: 0.37, p < 0.001
 #Indirect effect: 0.10, p < 0.001
 
+# Positive emotions model with bootstrap
+fit_pos_boot <- sem(model_pos, data = data, se = "bootstrap", bootstrap = 1000)
+
+pos_indirect_ci <- lavaan::parameterEstimates(fit_pos_boot, ci = TRUE) %>%
+  dplyr::filter(label == "indirect") %>%
+  dplyr::select(label, est, se, ci.lower, ci.upper, pvalue)
+
+# Rename AFTER selection
+pos_indirect_ci <- dplyr::rename(
+  pos_indirect_ci,
+  Label = label,
+  Estimate = est,
+  SE = se,
+  CI_lower = ci.lower,
+  CI_upper = ci.upper,
+  P_value = pvalue
+)
+
+print(pos_indirect_ci)
+
+
+
+
 
 # Model specification for negative emotions as mediator
 model_neg <- '
@@ -236,6 +282,39 @@ summary(fit_neg, standardized = TRUE, fit.measures = TRUE)
 #Effect on emotion: 0.12, p < 0.08
 #Emotion on policy: 1.07, p < 0.001
 #Indirect effect: 0.13, p < 0.08
+
+#bootstrap CIs
+fit_neg_boot <- lavaan::sem(model_neg, data = data, se = "bootstrap", bootstrap = 1000)
+
+# Extract indirect effect with 95% CI
+neg_indirect_ci <- lavaan::parameterEstimates(fit_neg_boot, ci = TRUE) %>%
+  dplyr::filter(label == "indirect") %>%
+  dplyr::select(label, est, se, ci.lower, ci.upper, pvalue)
+
+# Rename AFTER selection
+neg_indirect_ci <- dplyr::rename(
+  neg_indirect_ci,
+  Label = label,
+  Estimate = est,
+  SE = se,
+  CI_lower = ci.lower,
+  CI_upper = ci.upper,
+  P_value = pvalue
+)
+
+print(neg_indirect_ci)
+
+
+
+# Positive emotions mediation model
+fitmeasures(fit_pos_boot, c("chisq", "df", "pvalue"))
+
+# Negative emotions mediation model
+fitmeasures(fit_neg_boot, c("chisq", "df", "pvalue"))
+
+# Serial mediation model
+fitmeasures(fit_serial, c("chisq", "df", "pvalue"))
+
 
 
 
@@ -507,6 +586,24 @@ fit_negative <- sem(negative_model, data=data)
 anova(fit_positive, fit_negative, fit_serial)
 
 
+#Bootstraped CIs
+serial_indirect_ci <- lavaan::parameterEstimates(fit_serial, ci = TRUE) %>%
+  dplyr::filter(grepl("indirect", label)) %>%
+  dplyr::select(label, est, se, ci.lower, ci.upper, pvalue)
+
+serial_indirect_ci <- dplyr::rename(
+  serial_indirect_ci,
+  Label = label,
+  Estimate = est,
+  SE = se,
+  CI_lower = ci.lower,
+  CI_upper = ci.upper,
+  P_value = pvalue
+)
+
+print(serial_indirect_ci)
+
+
 ```
 
 ```{r actionVnonaction}
@@ -544,6 +641,26 @@ model_combined <- '
 '
 fit_combined <- sem(model_combined, data=data)
 summary(fit_combined, standardized=TRUE, fit.measures=TRUE)
+
+
+action_mean <- mean(data$ActionEmotion, na.rm = TRUE)
+action_sd <- sd(data$ActionEmotion, na.rm = TRUE)
+
+nonaction_mean <- mean(data$NonActionEmotion, na.rm = TRUE)
+nonaction_sd <- sd(data$NonActionEmotion, na.rm = TRUE)
+
+cat("ActionEmotion Mean:", action_mean, "\n")
+cat("ActionEmotion SD:", action_sd, "\n")
+cat("NonActionEmotion Mean:", nonaction_mean, "\n")
+cat("NonActionEmotion SD:", nonaction_sd, "\n")
+
+# Alpha reliabilities
+action_alpha <- psych::alpha(data[, c("Angry", "Hopeful", "Optimistic")])
+nonaction_alpha <- psych::alpha(data[, c("Sadness", "Fearful", "Helplessness", "Guilty")])
+
+# Print alpha values
+cat("ActionEmotion Alpha:", action_alpha$total$raw_alpha, "\n")
+cat("NonActionEmotion Alpha:", nonaction_alpha$total$raw_alpha, "\n")
 
 
 anova(fit_action, fit_nonaction, fit_combined)
@@ -620,6 +737,177 @@ emotion_mediation_summary_df <- emotion_mediation_full_summary(data, emotions, b
 #View(emotion_mediation_summary_df)
 ```
 
+```{r OneFactorAttempt}
+# Reverse code Hopeful and Optimistic (assuming 1–5 scale)
+data <- data %>%
+  mutate(
+    Hopeful_rev = 6 - Hopeful,
+    Optimistic_rev = 6 - Optimistic
+  )
+
+# Define CFA model: 1 factor for 7 emotions
+model_cfa <- '
+  ClimateEmotion =~ Hopeful_rev + Optimistic_rev + Fearful + Sadness + Helplessness + Guilty + Angry
+'
+
+# Fit the model
+fit_cfa <- lavaan::cfa(model_cfa, data = data)
+
+# Get model fit indices
+summary(fit_cfa, standardized = TRUE, fit.measures = TRUE)
+
+# Extract RMSEA and CFI
+fitmeasures(fit_cfa, c("rmsea", "cfi"))
+
+# Calculate alpha reliability
+alpha_cfa <- psych::alpha(
+    data[, c("Hopeful_rev", "Optimistic_rev", "Fearful", "Sadness", "Helplessness", "Guilty", "Angry")],
+    check.keys = FALSE
+)
 
 
+# Mean and SD of the combined climate emotion scale
+data$ClimateEmotion <- rowMeans(data[, c("Hopeful_rev", "Optimistic_rev", "Fearful", "Sadness", "Helplessness", "Guilty", "Angry")], na.rm = TRUE)
+climate_mean <- mean(data$ClimateEmotion, na.rm = TRUE)
+climate_sd <- sd(data$ClimateEmotion, na.rm = TRUE)
+
+# Print everything
+cat("Alpha:", alpha_cfa$total$raw_alpha, "\n")
+cat("Mean:", climate_mean, "\n")
+cat("SD:", climate_sd, "\n")
+
+```
+
+```{r MetricInvarianceAttempts}
+# Define model
+policy_model <- '
+  PolicyLatent =~ GovEnvSpend + EnvReg + GovActionRisingTemps
+'
+
+
+# Subset and create age groups
+data$AgeGroup <- cut(data$Age, breaks = c(20, 40, 60, Inf), labels = c("20-40", "40-60", "60+"))
+data_age <- subset(data, !is.na(AgeGroup))
+
+# Fit models
+fit_config_age <- cfa(policy_model, data = data_age, group = "AgeGroup", std.lv = TRUE)
+fit_metric_age <- cfa(policy_model, data = data_age, group = "AgeGroup", group.equal = "loadings", std.lv = TRUE)
+fit_scalar_age <- cfa(policy_model, data = data_age, group = "AgeGroup", group.equal = c("loadings", "intercepts"), std.lv = TRUE)
+
+# Compare model fits
+anova(fit_config_age, fit_metric_age, fit_scalar_age)
+
+# Extract fit measures
+cfi_age <- c(fitmeasures(fit_config_age, "cfi"), fitmeasures(fit_metric_age, "cfi"), fitmeasures(fit_scalar_age, "cfi"))
+rmsea_age <- c(fitmeasures(fit_config_age, "rmsea"), fitmeasures(fit_metric_age, "rmsea"), fitmeasures(fit_scalar_age, "rmsea"))
+
+# Compute change
+delta_cfi_age <- diff(cfi_age)
+delta_rmsea_age <- diff(rmsea_age)
+
+# View changes
+delta_cfi_age
+delta_rmsea_age
+
+# Define CFA model with renamed latent variable
+policy_model <- '
+  PolicyLatent =~ GovEnvSpend + EnvReg + GovActionRisingTemps
+'
+
+
+# Subset to LibCon = 5, 6, 7 and create factor group variable
+data_ideo <- subset(data, LibCon %in% c(5, 6, 7))
+data_ideo$IdeologyGroup <- factor(data_ideo$LibCon)
+
+# Fit configural model (no constraints)
+fit_config_ideo <- cfa(policy_model, data = data_ideo, group = "IdeologyGroup", std.lv = TRUE)
+
+# Fit metric model (equal loadings)
+fit_metric_ideo <- cfa(policy_model, data = data_ideo, group = "IdeologyGroup", group.equal = "loadings", std.lv = TRUE)
+
+# Fit scalar model (equal loadings + intercepts)
+fit_scalar_ideo <- cfa(policy_model, data = data_ideo, group = "IdeologyGroup", group.equal = c("loadings", "intercepts"), std.lv = TRUE)
+
+# Chi-squared difference test
+anova(fit_config_ideo, fit_metric_ideo, fit_scalar_ideo)
+
+# Extract CFI and RMSEA for each model
+cfi_ideo <- c(
+  fitmeasures(fit_config_ideo, "cfi"),
+  fitmeasures(fit_metric_ideo, "cfi"),
+  fitmeasures(fit_scalar_ideo, "cfi")
+)
+
+rmsea_ideo <- c(
+  fitmeasures(fit_config_ideo, "rmsea"),
+  fitmeasures(fit_metric_ideo, "rmsea"),
+  fitmeasures(fit_scalar_ideo, "rmsea")
+)
+
+# Calculate changes in fit indices
+delta_cfi_ideo <- diff(cfi_ideo)
+delta_rmsea_ideo <- diff(rmsea_ideo)
+
+# Print results
+delta_cfi_ideo
+delta_rmsea_ideo
+
+
+
+
+# Define legacy motivation latent model
+legacy_model <- '
+  LegacyLatent =~ ImportantLeavePositiveLegacy + ImportantPositiveSocietyImpact + CareFutureGenerationsThoughts
+'
+
+# Create age groups
+data$AgeGroup <- cut(data$Age, breaks = c(20, 40, 60, Inf), labels = c("20-40", "40-60", "60+"))
+data_age <- subset(data, !is.na(AgeGroup))
+
+# Fit models
+fit_config_age_legacy <- cfa(legacy_model, data = data_age, group = "AgeGroup", std.lv = TRUE)
+fit_metric_age_legacy <- cfa(legacy_model, data = data_age, group = "AgeGroup", group.equal = "loadings", std.lv = TRUE)
+fit_scalar_age_legacy <- cfa(legacy_model, data = data_age, group = "AgeGroup", group.equal = c("loadings", "intercepts"), std.lv = TRUE)
+
+# Compare model fits
+anova(fit_config_age_legacy, fit_metric_age_legacy, fit_scalar_age_legacy)
+
+# Extract and compute fit changes
+cfi_age_legacy <- c(fitmeasures(fit_config_age_legacy, "cfi"), fitmeasures(fit_metric_age_legacy, "cfi"), fitmeasures(fit_scalar_age_legacy, "cfi"))
+rmsea_age_legacy <- c(fitmeasures(fit_config_age_legacy, "rmsea"), fitmeasures(fit_metric_age_legacy, "rmsea"), fitmeasures(fit_scalar_age_legacy, "rmsea"))
+
+delta_cfi_age_legacy <- diff(cfi_age_legacy)
+delta_rmsea_age_legacy <- diff(rmsea_age_legacy)
+
+# Print
+delta_cfi_age_legacy
+delta_rmsea_age_legacy
+
+
+# Subset ideology group (5, 6, 7) and label
+data_ideo <- subset(data, LibCon %in% c(5, 6, 7))
+data_ideo$IdeologyGroup <- factor(data_ideo$LibCon)
+
+# Fit models
+fit_config_ideo_legacy <- cfa(legacy_model, data = data_ideo, group = "IdeologyGroup", std.lv = TRUE)
+fit_metric_ideo_legacy <- cfa(legacy_model, data = data_ideo, group = "IdeologyGroup", group.equal = "loadings", std.lv = TRUE)
+fit_scalar_ideo_legacy <- cfa(legacy_model, data = data_ideo, group = "IdeologyGroup", group.equal = c("loadings", "intercepts"), std.lv = TRUE)
+
+# Compare model fits
+anova(fit_config_ideo_legacy, fit_metric_ideo_legacy, fit_scalar_ideo_legacy)
+
+# Extract and compute fit changes
+cfi_ideo_legacy <- c(fitmeasures(fit_config_ideo_legacy, "cfi"), fitmeasures(fit_metric_ideo_legacy, "cfi"), fitmeasures(fit_scalar_ideo_legacy, "cfi"))
+rmsea_ideo_legacy <- c(fitmeasures(fit_config_ideo_legacy, "rmsea"), fitmeasures(fit_metric_ideo_legacy, "rmsea"), fitmeasures(fit_scalar_ideo_legacy, "rmsea"))
+
+delta_cfi_ideo_legacy <- diff(cfi_ideo_legacy)
+delta_rmsea_ideo_legacy <- diff(rmsea_ideo_legacy)
+
+# Print
+delta_cfi_ideo_legacy
+delta_rmsea_ideo_legacy
+
+
+
+```
 
